@@ -82,6 +82,10 @@ public class ExpandedSessionInfo extends SessionInfo {
         return netherNetId;
     }
 
+    public void setNetherNetId(BigInteger netherNetId) {
+        this.netherNetId = netherNetId;
+    }
+
     public String getDeviceId() {
         return deviceId;
     }

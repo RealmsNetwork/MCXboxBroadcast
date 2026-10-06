@@ -6,7 +6,6 @@ import com.rtm516.mcxboxbroadcast.core.exceptions.SessionCreationException;
 import com.rtm516.mcxboxbroadcast.core.exceptions.SessionUpdateException;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateSessionRequest;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateSessionResponse;
-import com.rtm516.mcxboxbroadcast.core.models.session.member.SessionMember;
 import com.rtm516.mcxboxbroadcast.core.notifications.NotificationManager;
 import com.rtm516.mcxboxbroadcast.core.storage.StorageManager;
 import org.java_websocket.util.NamedThreadFactory;
@@ -15,7 +14,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -24,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -31,15 +30,19 @@ import java.util.concurrent.ScheduledExecutorService;
  * Simple manager to authenticate and create sessions on Xbox
  */
 public class SessionManager extends SessionManagerCore {
-    private static final SecureRandom NONCE_RANDOM = new SecureRandom();
+    private static final long SUB_SESSION_RETRY_SECONDS = 30;
 
     private final ScheduledExecutorService scheduledThreadPool;
     private final Map<String, SubSessionManager> subSessionManagers;
 
+    /**
+     * Cached sub-sessions whose creation is being retried.
+     */
+    private final Set<String> pendingSubSessions = ConcurrentHashMap.newKeySet();
+
     private CoreConfig.FriendSyncConfig friendSyncConfig;
     private Runnable restartCallback;
 
-    private Map<String, String> nonces;
 
     /**
      * Create an instance of SessionManager
@@ -51,8 +54,7 @@ public class SessionManager extends SessionManagerCore {
     public SessionManager(StorageManager storageManager, NotificationManager notificationManager, Logger logger) {
         super(storageManager, notificationManager, logger.prefixed("Primary Session"));
         this.scheduledThreadPool = Executors.newScheduledThreadPool(5, new NamedThreadFactory("MCXboxBroadcast Thread"));
-        this.subSessionManagers = new HashMap<>();
-        this.nonces = new ConcurrentHashMap<>();
+        this.subSessionManagers = new ConcurrentHashMap<>();
     }
 
     @Override
@@ -83,21 +85,41 @@ public class SessionManager extends SessionManagerCore {
      * @throws SessionUpdateException   If the session data couldn't be set due to some issue
      */
     public boolean init(SessionInfo sessionInfo, CoreConfig.FriendSyncConfig friendSyncConfig) throws SessionCreationException, SessionUpdateException {
-        // Set the internal session information based on the session info
+        return init(sessionInfo, friendSyncConfig, null, null);
+    }
+
+    /**
+     * Initialize using a shared NetherNet transport supplied by Geyser/EduGeyser.
+     *
+     * @param sessionInfo The session information to advertise
+     * @param friendSyncConfig The friend synchronization configuration
+     * @param netherNetId The shared NetherNet connection ID
+     * @param pmsgId The shared PlayFab messaging ID
+     */
+    public boolean init(SessionInfo sessionInfo, CoreConfig.FriendSyncConfig friendSyncConfig, String netherNetId, String pmsgId) throws SessionCreationException, SessionUpdateException {
         this.sessionInfo = new ExpandedSessionInfo("", "", sessionInfo);
+
+        if (netherNetId != null) {
+            try {
+                this.sessionInfo.setNetherNetId(new java.math.BigInteger(netherNetId));
+            } catch (NumberFormatException e) {
+                throw new SessionCreationException("Invalid NetherNet connection ID: " + netherNetId);
+            }
+            if (pmsgId == null || pmsgId.isBlank()) {
+                throw new SessionCreationException("NetherNet PlayFab messaging ID is missing");
+            }
+            useSharedNetherNet(this.sessionInfo.getNetherNetId(), pmsgId);
+        }
 
         super.init();
 
-        // If we failed to initialize, don't continue with the rest of the setup
         if (!this.initialized) {
             return this.initialized;
         }
 
-        // Set up the auto friend sync
         this.friendSyncConfig = friendSyncConfig;
         friendManager().init(this.friendSyncConfig);
 
-        // Load sub-sessions from cache
         List<String> subSessions = new ArrayList<>();
         try {
             String subSessionsJson = storageManager().subSessions();
@@ -106,26 +128,16 @@ public class SessionManager extends SessionManagerCore {
             }
         } catch (IOException ignored) { }
 
-        // Create the sub-sessions in a new thread so we don't block the main thread
         List<String> finalSubSessions = subSessions;
+        pendingSubSessions.addAll(finalSubSessions);
         scheduledThreadPool.execute(() -> {
-            // Create the sub-session manager for each sub-session
             for (String subSession : finalSubSessions) {
-                try {
-                    SubSessionManager subSessionManager = new SubSessionManager(subSession, this, storageManager().subSession(subSession), notificationManager(), logger);
-                    subSessionManager.init();
-                    subSessionManager.friendManager().init(this.friendSyncConfig);
-                    subSessionManagers.put(subSession, subSessionManager);
-                } catch (SessionCreationException | SessionUpdateException e) {
-                    logger.error("Failed to create sub-session " + subSession, e);
-                    // TODO Retry creation after 30s or so
-                }
+                createSubSession(subSession);
             }
         });
 
         return this.initialized;
     }
-
     @Override
     protected boolean handleFriendship() {
         // Don't do anything as we are the main session
@@ -141,66 +153,21 @@ public class SessionManager extends SessionManagerCore {
     public void updateSession(SessionInfo sessionInfo) throws SessionUpdateException {
         this.sessionInfo.updateSessionInfo(sessionInfo);
         updateSession();
-    }
 
-    @Override
-    public void updateNonces() throws SessionUpdateException {
-        // Get session
-        HttpRequest createSessionRequest = HttpRequest.newBuilder()
-            .uri(URI.create(Constants.CREATE_SESSION.formatted(this.sessionInfo.getSessionId())))
-            .header("Content-Type", "application/json")
-            .header("Authorization", getTokenHeader())
-            .header("x-xbl-contract-version", "107")
-            .GET()
-            .build();
+        // A full primary session may have triggered the restart callback above.
+        // Do not touch the old sub-session managers after that handoff.
+        if (!initialized) {
+            return;
+        }
 
-        try {
-            HttpResponse<String> createSessionResponse = httpClient.send(createSessionRequest, HttpResponse.BodyHandlers.ofString());
-            CreateSessionResponse sessionResponse = Constants.GSON.fromJson(createSessionResponse.body(), CreateSessionResponse.class);
-
-            if (sessionResponse == null) {
-                throw new SessionUpdateException("Failed to get session for nonces, joining will not work: sessionResponse is null");
+        // Each sub-session owns its own Xbox session but shares the same
+        // NetherNet transport. Keep its advertised server state in sync.
+        for (SubSessionManager subSessionManager : subSessionManagers.values()) {
+            try {
+                subSessionManager.syncFromParent();
+            } catch (SessionUpdateException e) {
+                logger.error("Failed to sync sub-session " + subSessionManager.getSessionId(), e);
             }
-
-            boolean hasChanges = false;
-
-            // Collect active XUIDs from the session
-            Set<String> activeXuids = new HashSet<>();
-            for (SessionMember member : sessionResponse.members().values()) {
-                activeXuids.add(member.constants().get("system").xuid());
-            }
-
-            // Remove our own xuid
-            activeXuids.remove(sessionInfo.getXuid());
-
-            // Remove stale nonces
-            hasChanges = nonces.keySet().retainAll(activeXuids);
-
-            for (String xuid : activeXuids) {
-                if (!nonces.containsKey(xuid)) {
-                    // Generate a nonce
-                    byte[] bytes = new byte[8];
-                    NONCE_RANDOM.nextBytes(bytes);
-                    StringBuilder hex = new StringBuilder(16);
-                    for (byte b : bytes) {
-                        hex.append(String.format("%02x", b));
-                    }
-
-                    // Put the nonce
-                    nonces.put(xuid, hex.toString());
-
-                    logger.debug("Generated nonce for XUID " + xuid + ": " + hex);
-
-                    hasChanges = true;
-                }
-            }
-
-            // Only update the session properties if something changed
-            if (hasChanges) {
-                updateSession();
-            }
-        } catch (IOException | InterruptedException e) {
-            throw new SessionUpdateException("Failed to get session for nonces, joining will not work: " + e.getMessage());
         }
     }
 
@@ -266,34 +233,52 @@ public class SessionManager extends SessionManagerCore {
     }
 
     /**
-     * Create a sub-session for the given ID
+     * Create a sub-session for the given ID.
+     *
+     * Failed creations are retried so one stalled Xbox/RTA handshake does
+     * not permanently drop a configured account.
      *
      * @param id The ID of the sub-session to create
      */
-    public void addSubSession(String id) {
-        // Make sure we don't already have that ID
-        if (subSessionManagers.containsKey(id)) {
-            coreLogger.error("Sub-session already exists with that ID");
+    private void createSubSession(String id) {
+        if (!pendingSubSessions.contains(id)) {
             return;
         }
 
-        // Create the sub-session manager
+        SubSessionManager subSessionManager;
         try {
-            SubSessionManager subSessionManager = new SubSessionManager(id, this, storageManager().subSession(id), notificationManager(), logger);
+            subSessionManager = new SubSessionManager(
+                id,
+                this,
+                storageManager().subSession(id),
+                notificationManager(),
+                logger
+            );
             subSessionManager.init();
-            subSessionManager.friendManager().init(friendSyncConfig);
-            subSessionManagers.put(id, subSessionManager);
+            subSessionManager.friendManager().init(this.friendSyncConfig);
         } catch (SessionCreationException | SessionUpdateException e) {
-            coreLogger.error("Failed to create sub-session", e);
+            logger.error("Failed to create sub-session " + id + ", retrying in "
+                + SUB_SESSION_RETRY_SECONDS + " seconds", e);
+
+            if (!scheduledThreadPool.isShutdown()) {
+                scheduledThreadPool.schedule(
+                    () -> createSubSession(id),
+                    SUB_SESSION_RETRY_SECONDS,
+                    TimeUnit.SECONDS
+                );
+            }
             return;
         }
 
-        // Update the list of sub-sessions
-        try {
-            storageManager().subSessions(Constants.GSON.toJson(subSessionManagers.keySet()));
-        } catch (JsonParseException | IOException e) {
-            coreLogger.error("Failed to update sub-session list", e);
+        // The account may have been removed while creation was in progress.
+        if (!pendingSubSessions.remove(id)) {
+            subSessionManager.shutdown();
+            return;
         }
+
+        subSessionManagers.put(id, subSessionManager);
+        saveSubSessionList();
+        coreLogger.info("Created sub-session with ID " + id);
     }
 
     /**
@@ -302,31 +287,43 @@ public class SessionManager extends SessionManagerCore {
      * @param id The ID of the sub-session to remove
      */
     public void removeSubSession(String id) {
-        // Make sure we have that ID
+        if (pendingSubSessions.remove(id)) {
+            cleanupRemovedSubSession(id);
+            return;
+        }
+
         if (!subSessionManagers.containsKey(id)) {
             coreLogger.error("Sub-session does not exist with that ID");
             return;
         }
 
-        // Remove the sub-session manager
         subSessionManagers.get(id).shutdown();
         subSessionManagers.remove(id);
+        cleanupRemovedSubSession(id);
+    }
 
-        // Delete the sub-session cache file
+    private void cleanupRemovedSubSession(String id) {
         try {
             storageManager().subSession(id).cleanup();
         } catch (IOException e) {
             coreLogger.error("Failed to delete sub-session cache file", e);
         }
 
-        // Update the list of sub-sessions
+        saveSubSessionList();
+        coreLogger.info("Removed sub-session with ID " + id);
+    }
+
+    /**
+     * Persist both ready and pending sub-session IDs.
+     */
+    private void saveSubSessionList() {
+        Set<String> ids = new HashSet<>(subSessionManagers.keySet());
+        ids.addAll(pendingSubSessions);
         try {
-            storageManager().subSessions(Constants.GSON.toJson(subSessionManagers.keySet()));
+            storageManager().subSessions(Constants.GSON.toJson(ids));
         } catch (JsonParseException | IOException e) {
             coreLogger.error("Failed to update sub-session list", e);
         }
-
-        coreLogger.info("Removed sub-session with ID " + id);
     }
 
     /**

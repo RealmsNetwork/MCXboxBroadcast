@@ -7,7 +7,9 @@ import com.rtm516.mcxboxbroadcast.core.exceptions.SessionCreationException;
 import com.rtm516.mcxboxbroadcast.core.exceptions.SessionUpdateException;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateHandleRequest;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateHandleResponse;
+import com.rtm516.mcxboxbroadcast.core.models.session.CreateSessionResponse;
 import com.rtm516.mcxboxbroadcast.core.models.session.SessionRef;
+import com.rtm516.mcxboxbroadcast.core.models.session.member.SessionMember;
 import com.rtm516.mcxboxbroadcast.core.models.session.SocialSummaryResponse;
 import com.rtm516.mcxboxbroadcast.core.notifications.NotificationManager;
 import com.rtm516.mcxboxbroadcast.core.storage.StorageManager;
@@ -25,12 +27,19 @@ import net.raphimc.minecraftauth.bedrock.BedrockAuthManager;
 
 import java.io.File;
 import java.io.IOException;
+import java.math.BigInteger;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
+import java.security.SecureRandom;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -51,9 +60,17 @@ public abstract class SessionManagerCore {
 
     protected RtaWebsocketClient rtaWebsocket;
     protected ExpandedSessionInfo sessionInfo;
+    protected final Map<String, String> nonces = new ConcurrentHashMap<>();
+    private static final SecureRandom NONCE_RANDOM = new SecureRandom();
     protected String lastSessionResponse;
 
     protected boolean initialized = false;
+
+    /**
+     * True when this session uses an already-running NetherNet transport.
+     * This is used by Geyser/EduGeyser's shared NetherNet server and by sub-sessions.
+     */
+    private boolean sharedNetherNet = false;
 
     private Channel netherNetChannel;
     private EventLoopGroup bossGroup;
@@ -242,13 +259,20 @@ public abstract class SessionManagerCore {
                 // Update the current session connection ID
                 this.sessionInfo.setConnectionId(connectionId);
             } catch (InterruptedException | ExecutionException | TimeoutException e) {
-                throw new SessionCreationException("Unable to get connectionId for session: " + e.getMessage());
+                // The connect is asynchronous, so the socket can still open after this
+                // timeout. Close it so the next connection check can recover it.
+                rtaWebsocket.close();
+                throw new SessionCreationException("Unable to get connectionId for session: " + e.getClass().getSimpleName() + (e.getMessage() == null ? "" : " " + e.getMessage()));
             }
 
-            setupNetherNet();
+            // Primary standalone sessions own their NetherNet transport.
+            // Geyser/EduGeyser and sub-sessions reuse an already-running transport.
+            if (!sharedNetherNet) {
+                setupNetherNet();
 
-            if (this.netherNetChannel == null || !this.netherNetChannel.isOpen()) {
-                throw new SessionCreationException("Unable to start NetherNet channel");
+                if (this.netherNetChannel == null || !this.netherNetChannel.isOpen()) {
+                    throw new SessionCreationException("Unable to start NetherNet channel");
+                }
             }
         }
 
@@ -318,12 +342,72 @@ public abstract class SessionManagerCore {
     protected abstract void updateSession() throws SessionUpdateException;
 
     /**
-     * Update the nonces in the session based on the current players
+     * Update the per-player nonces in the session based on its current members.
+     *
+     * A nonce is created when a player first appears in this Xbox session. That
+     * transition is also used to record a session join for friend-expiry tracking.
      *
      * @throws SessionUpdateException If the update fails
      */
     public void updateNonces() throws SessionUpdateException {
-        // Nothing by default
+        if (this.sessionInfo == null) {
+            return;
+        }
+
+        HttpRequest getSessionRequest = HttpRequest.newBuilder()
+            .uri(URI.create(Constants.CREATE_SESSION.formatted(getSessionId())))
+            .header("Content-Type", "application/json")
+            .header("Authorization", getTokenHeader())
+            .header("x-xbl-contract-version", "107")
+            .GET()
+            .build();
+
+        try {
+            HttpResponse<String> getSessionResponse = httpClient.send(getSessionRequest, HttpResponse.BodyHandlers.ofString());
+            CreateSessionResponse sessionResponse = Constants.GSON.fromJson(getSessionResponse.body(), CreateSessionResponse.class);
+
+            if (sessionResponse == null || sessionResponse.members() == null) {
+                throw new SessionUpdateException("Failed to get session for nonces, joining will not work: no members returned");
+            }
+
+            Set<String> activeXuids = new HashSet<>();
+            for (SessionMember member : sessionResponse.members().values()) {
+                if (member != null && member.constants() != null && member.constants().get("system") != null
+                    && member.constants().get("system").xuid() != null) {
+                    activeXuids.add(member.constants().get("system").xuid());
+                }
+            }
+
+            activeXuids.remove(sessionInfo.getXuid());
+
+            boolean hasChanges = nonces.keySet().retainAll(activeXuids);
+
+            for (String xuid : activeXuids) {
+                if (!nonces.containsKey(xuid)) {
+                    byte[] bytes = new byte[8];
+                    NONCE_RANDOM.nextBytes(bytes);
+                    StringBuilder hex = new StringBuilder(16);
+                    for (byte b : bytes) {
+                        hex.append(String.format("%02x", b));
+                    }
+
+                    nonces.put(xuid, hex.toString());
+                    logger.debug("Generated nonce for XUID " + xuid + ": " + hex);
+
+                    // This records Xbox-session joins for expiry without assuming
+                    // that every session member is an actual friend.
+                    recordJoin(xuid);
+
+                    hasChanges = true;
+                }
+            }
+
+            if (hasChanges) {
+                updateSession();
+            }
+        } catch (IOException | InterruptedException e) {
+            throw new SessionUpdateException("Failed to get session for nonces, joining will not work: " + e.getMessage());
+        }
     }
 
     /**
@@ -368,22 +452,49 @@ public abstract class SessionManagerCore {
      * This should be called before any updates to the session otherwise they might fail
      */
     protected void checkConnection() {
-        boolean rtaIsOpen = this.rtaWebsocket != null && this.rtaWebsocket.isOpen();
-        boolean rtcIsOpen = this.netherNetChannel != null && this.netherNetChannel.isOpen();
-        boolean signalingIsOpen = this.signaling != null && this.signaling.isActive();
+        boolean rtaIsOpen = this.rtaWebsocket != null && this.rtaWebsocket.isOpen() && hasRegisteredConnection();
 
-        // Check if the connection is Lost
-        if (!rtaIsOpen || !rtcIsOpen || !signalingIsOpen) {
+        boolean transportHealthy = sharedNetherNet
+            || (this.netherNetChannel != null && this.netherNetChannel.isOpen()
+                && this.signaling != null && this.signaling.isActive());
+
+        if (!rtaIsOpen || !transportHealthy) {
             try {
-                logger.warn("Connection to websocket lost, re-creating session...");
-                logger.debug("WebSocket status: RTA Open: " + rtaIsOpen + ", RTC Open: " + rtcIsOpen + ", Signaling: " + signalingIsOpen);
+                logger.warn("Session connection lost, re-creating session...");
+                logger.debug("Connection status: RTA Open: " + rtaIsOpen
+                    + ", Shared NetherNet: " + sharedNetherNet
+                    + ", Local RTC Open: " + (this.netherNetChannel != null && this.netherNetChannel.isOpen())
+                    + ", Local Signaling: " + (this.signaling != null && this.signaling.isActive()));
 
                 createSession();
-                logger.info("WebSocket session reconnected");
+                logger.info("Session reconnected");
             } catch (SessionCreationException | SessionUpdateException e) {
                 logger.error("Session is dead and hit exception trying to re-create it", e);
             }
         }
+    }
+
+    /**
+     * An open socket alone does not prove a working connection. A socket that never
+     * received its connection ID, or received one that the session is not bound to,
+     * is unknown to RTA and can remain open forever.
+     *
+     * @return true when the current RTA websocket has the connection ID used by this session
+     */
+    private boolean hasRegisteredConnection() {
+        if (this.rtaWebsocket == null) {
+            return false;
+        }
+
+        var future = this.rtaWebsocket.getConnectionIdFuture();
+        if (!future.isDone() || future.isCompletedExceptionally()) {
+            return false;
+        }
+
+        String connectionId = future.getNow(null);
+        return connectionId != null
+            && this.sessionInfo != null
+            && connectionId.equals(this.sessionInfo.getConnectionId());
     }
 
     /**
@@ -485,6 +596,22 @@ public abstract class SessionManagerCore {
     }
 
     /**
+     * Use an existing NetherNet transport instead of creating a local one.
+     *
+     * @param netherNetId The shared NetherNet connection ID
+     * @param pmsgId The shared PlayFab messaging ID
+     */
+    protected void useSharedNetherNet(BigInteger netherNetId, String pmsgId) {
+        if (this.sessionInfo == null) {
+            throw new IllegalStateException("Session information must exist before configuring NetherNet");
+        }
+
+        this.sessionInfo.setNetherNetId(netherNetId);
+        this.sessionInfo.setPmsgId(pmsgId);
+        this.sharedNetherNet = true;
+    }
+
+    /**
      * Stop the current session and close the websocket
      */
     public void shutdown() {
@@ -513,6 +640,30 @@ public abstract class SessionManagerCore {
         if (workerGroup != null) {
             workerGroup.shutdownGracefully();
             workerGroup = null;
+        }
+    }
+
+    /**
+     * Record that a player joined through the Xbox session so friend expiry
+     * can treat that player as active.
+     *
+     * Friends-of-friends and explicitly invited players can appear in the
+     * Xbox session without being friends, so this history is only evidence
+     * of a session join and is validated against the current friend list
+     * before an expiry removal.
+     *
+     * @param xuid The XUID of the player that joined
+     */
+    protected void recordJoin(String xuid) {
+        try {
+            StorageManager.PlayerHistoryStorage playerHistory = storageManager().playerHistory();
+            Instant previous = playerHistory.lastSeen(xuid);
+            Instant now = Instant.now();
+            playerHistory.lastSeen(xuid, now);
+            logger.debug("Recorded Xbox session join for XUID " + xuid + " at " + now
+                + " (previous record: " + (previous == null ? "none" : previous) + ")");
+        } catch (IOException e) {
+            logger.error("Failed to record Xbox session join for XUID " + xuid, e);
         }
     }
 

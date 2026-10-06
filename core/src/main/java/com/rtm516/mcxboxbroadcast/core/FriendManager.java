@@ -219,23 +219,53 @@ public class FriendManager {
 
         sessionManager.scheduledThread().scheduleWithFixedDelay(() -> {
             try {
-                for (Map.Entry<String, Instant> entry : playerHistory.all().entrySet()) {
+                Map<String, String> xuidGamertagMap = new HashMap<>();
+                lastFriendCache().forEach(person -> xuidGamertagMap.put(person.xuid, person.gamertag));
+
+                Instant cutoff = Instant.now().minusSeconds(
+                    TimeUnit.DAYS.toSeconds(friendSyncConfig.expiry().days())
+                );
+
+                Map<String, Instant> history = playerHistory.all();
+                int expired = 0;
+                int strangers = 0;
+
+                for (Map.Entry<String, Instant> entry : history.entrySet()) {
                     String xuid = entry.getKey();
                     Instant lastSeen = entry.getValue();
 
-                    if (lastSeen.isBefore(Instant.now().minusSeconds(TimeUnit.DAYS.toSeconds(friendSyncConfig.expiry().days())))) {
+                    // A friends-of-friends player or explicitly invited player can
+                    // join the Xbox session without being an actual friend. Never
+                    // turn those session joins into a friend removal operation.
+                    if (!xuidGamertagMap.containsKey(xuid)) {
+                        strangers++;
+                        logger.debug("XUID " + xuid + " is no longer a friend (last seen " + lastSeen + "), clearing history");
+                        playerHistory.clear(xuid);
+                        continue;
+                    }
+
+                    if (lastSeen.isBefore(cutoff)) {
+                        expired++;
                         try {
-                            logger.info("Removing player " + xuid + " from friends due to inactivity");
+                            logger.info("Removing " + xuidGamertagMap.get(xuid) + " (" + xuid
+                                + ") from friends due to inactivity, last seen " + lastSeen
+                                + " is before the cutoff " + cutoff);
                             remove(xuid, null);
                         } catch (Exception e) {
-                            if (e.getMessage().startsWith("429: ")) {
-                                logger.warn("Rate limited while trying to remove player " + xuid + " from friends for inactivity, will try again later");
+                            String message = e.getMessage();
+                            if (message != null && message.startsWith("429: ")) {
+                                logger.warn("Rate limited while trying to remove player " + xuid
+                                    + " from friends for inactivity, will try again later");
                                 return;
                             }
                             logger.error("Failed to remove player " + xuid + " from friends for inactivity", e);
                         }
                     }
                 }
+
+                logger.debug("Checked " + history.size() + " tracked Xbox session members against "
+                    + xuidGamertagMap.size() + " friends: " + expired + " expired, "
+                    + strangers + " no longer friends");
             } catch (IOException e) {
                 logger.error("Failed to clean up friends list", e);
             }
@@ -318,7 +348,9 @@ public class FriendManager {
                         if (addResponse.isFriend) {
                             // Let the user know we added a friend
                             logger.info("Added " + entry.getValue() + " (" + entry.getKey() + ") as a friend");
-                            sendInvite(entry.getKey());
+                            if (initialInvite) {
+                                sendInvite(entry.getKey());
+                            }
 
                             // Add the user to the cache
                             if (lastFriendCache.stream().noneMatch(p -> p.xuid.equals(entry.getKey()))) {
@@ -524,9 +556,8 @@ public class FriendManager {
      * @param xuid The XUID of the user to invite
      */
     public void sendInvite(String xuid) {
-        // Only invite if enabled
-        if (!initialInvite) {
-            return;
+        if (xuid == null || xuid.isBlank()) {
+            throw new IllegalArgumentException("XUID cannot be blank");
         }
 
         try {

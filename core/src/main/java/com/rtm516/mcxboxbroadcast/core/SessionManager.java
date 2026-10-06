@@ -17,6 +17,7 @@ import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -152,6 +153,16 @@ public class SessionManager extends SessionManagerCore {
     public void updateSession(SessionInfo sessionInfo) throws SessionUpdateException {
         this.sessionInfo.updateSessionInfo(sessionInfo);
         updateSession();
+
+        // Each sub-session owns its own Xbox session but shares the same
+        // NetherNet transport. Keep its advertised server state in sync.
+        for (SubSessionManager subSessionManager : subSessionManagers.values()) {
+            try {
+                subSessionManager.syncFromParent();
+            } catch (SessionUpdateException e) {
+                logger.error("Failed to sync sub-session " + subSessionManager.getSessionId(), e);
+            }
+        }
     }
 
     @Override

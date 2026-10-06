@@ -23,6 +23,7 @@ import org.geysermc.geyser.api.event.lifecycle.GeyserDefineCommandsEvent;
 import org.geysermc.geyser.api.event.lifecycle.GeyserPostInitializeEvent;
 import org.geysermc.geyser.api.event.lifecycle.GeyserShutdownEvent;
 import org.geysermc.geyser.api.extension.Extension;
+import org.geysermc.geyser.api.network.NethernetManager;
 
 import java.io.File;
 import java.io.IOException;
@@ -143,26 +144,12 @@ public class MCXboxBroadcastExtension implements Extension {
         }
 
         try {
-            config = ConfigLoader.loadConfig(configFile);
+            config = ConfigLoader.loadConfig(configFile, "Extension");
         } catch (IOException e) {
             logger.error("Failed to load config, extension will not start!", e);
             this.disable();
             return;
         }
-
-        // Start Nethernet via Geyser's API
-        var nethernet = this.geyserApi().nethernetManager();
-        if (nethernet == null) {
-            logger.error("Nethernet transport is not available. Extension will not start.");
-            this.disable();
-            return;
-        }
-        if (!nethernet.start()) {
-            logger.error("Failed to start Nethernet server. Extension will not start.");
-            this.disable();
-            return;
-        }
-        logger.info("Nethernet connection ID: " + nethernet.getConnectionId());
 
         // TODO Support multiple notification types
         notificationManager = new SlackNotificationManager(logger, config.notifications());
@@ -248,12 +235,20 @@ public class MCXboxBroadcastExtension implements Extension {
 
 
     private void createSession() {
-        // Use Geyser's shared Nethernet info
-        var nethernet = this.geyserApi().nethernetManager();
-        String connectionId = nethernet != null ? nethernet.getConnectionId() : null;
-        String pmsgId = nethernet != null ? nethernet.getPmsgId() : null;
+        if (nethernetManager == null) {
+            logger.error("Nethernet manager is unavailable, cannot create Xbox session");
+            return;
+        }
 
-        // Create the Xbox session
+        String connectionId = nethernetManager.getConnectionId();
+        String pmsgId = nethernetManager.getPmsgId();
+
+        if (pmsgId == null || pmsgId.isBlank()) {
+            logger.warn("Nethernet manager has not produced a PlayFab messaging ID yet, retrying session creation");
+            sessionManager.scheduledThread().schedule(this::createSession, config.session().updateInterval(), TimeUnit.SECONDS);
+            return;
+        }
+
         sessionManager.restartCallback(this::restart);
         try {
             boolean initialized = sessionManager.init(sessionInfo, config.friendSync(), connectionId, pmsgId);
@@ -262,16 +257,18 @@ public class MCXboxBroadcastExtension implements Extension {
                 return;
             }
         } catch (SessionCreationException | SessionUpdateException e) {
-            // A stalled RTA handshake here used to leave the extension without a
-            // session until the next restart. Keep trying like checkConnection does.
             int retrySeconds = config.session().updateInterval();
             sessionManager.logger().error("Failed to create xbox session, retrying in " + retrySeconds + " seconds", e);
             sessionManager.scheduledThread().schedule(this::createSession, retrySeconds, TimeUnit.SECONDS);
             return;
         }
 
-        // Start the update timer
-        sessionManager.scheduledThread().scheduleWithFixedDelay(this::tick, config.session().updateInterval(), config.session().updateInterval(), TimeUnit.SECONDS);
+        sessionManager.scheduledThread().scheduleWithFixedDelay(
+            this::tick,
+            config.session().updateInterval(),
+            config.session().updateInterval(),
+            TimeUnit.SECONDS
+        );
     }
 
     private void tick() {

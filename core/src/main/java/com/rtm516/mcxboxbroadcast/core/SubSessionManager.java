@@ -65,6 +65,8 @@ public class SubSessionManager extends SessionManagerCore {
      */
     public void syncFromParent() throws SessionUpdateException {
         this.sessionInfo.updateSessionInfo(parent.sessionInfo());
+        this.sessionInfo.setNetherNetId(parent.sessionInfo().getNetherNetId());
+        this.sessionInfo.setPmsgId(parent.sessionInfo().getPmsgId());
         updateSession();
     }
 

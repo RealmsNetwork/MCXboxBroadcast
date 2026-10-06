@@ -38,6 +38,7 @@ public class MCXboxBroadcastExtension implements Extension {
     SessionManager sessionManager;
     SessionInfo sessionInfo;
     CoreConfig config;
+    NethernetManager nethernetManager;
 
     @Subscribe
     public void onCommandDefine(GeyserDefineCommandsEvent event) {

@@ -14,7 +14,7 @@ pluginManagement {
 
 /*
  * During local development, prefer the checked-out EduGeyser fork over
- * the published dependency so the NethernetManager API and EduFloodgate
+ * the published dependency so the NetherNetManager API and EduFloodgate
  * forwarding changes are compiled against the exact fork in use.
  */
 val geyserForkDir = file("../EduGeyser")

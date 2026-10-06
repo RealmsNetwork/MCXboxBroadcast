@@ -7,7 +7,9 @@ import com.rtm516.mcxboxbroadcast.core.exceptions.SessionCreationException;
 import com.rtm516.mcxboxbroadcast.core.exceptions.SessionUpdateException;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateHandleRequest;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateHandleResponse;
+import com.rtm516.mcxboxbroadcast.core.models.session.CreateSessionResponse;
 import com.rtm516.mcxboxbroadcast.core.models.session.SessionRef;
+import com.rtm516.mcxboxbroadcast.core.models.session.member.SessionMember;
 import com.rtm516.mcxboxbroadcast.core.models.session.SocialSummaryResponse;
 import com.rtm516.mcxboxbroadcast.core.notifications.NotificationManager;
 import com.rtm516.mcxboxbroadcast.core.storage.StorageManager;
@@ -33,6 +35,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.security.SecureRandom;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -53,6 +60,8 @@ public abstract class SessionManagerCore {
 
     protected RtaWebsocketClient rtaWebsocket;
     protected ExpandedSessionInfo sessionInfo;
+    protected final Map<String, String> nonces = new ConcurrentHashMap<>();
+    private static final SecureRandom NONCE_RANDOM = new SecureRandom();
     protected String lastSessionResponse;
 
     protected boolean initialized = false;
@@ -333,12 +342,72 @@ public abstract class SessionManagerCore {
     protected abstract void updateSession() throws SessionUpdateException;
 
     /**
-     * Update the nonces in the session based on the current players
+     * Update the per-player nonces in the session based on its current members.
+     *
+     * A nonce is created when a player first appears in this Xbox session. That
+     * transition is also used to record a session join for friend-expiry tracking.
      *
      * @throws SessionUpdateException If the update fails
      */
     public void updateNonces() throws SessionUpdateException {
-        // Nothing by default
+        if (this.sessionInfo == null) {
+            return;
+        }
+
+        HttpRequest getSessionRequest = HttpRequest.newBuilder()
+            .uri(URI.create(Constants.CREATE_SESSION.formatted(getSessionId())))
+            .header("Content-Type", "application/json")
+            .header("Authorization", getTokenHeader())
+            .header("x-xbl-contract-version", "107")
+            .GET()
+            .build();
+
+        try {
+            HttpResponse<String> getSessionResponse = httpClient.send(getSessionRequest, HttpResponse.BodyHandlers.ofString());
+            CreateSessionResponse sessionResponse = Constants.GSON.fromJson(getSessionResponse.body(), CreateSessionResponse.class);
+
+            if (sessionResponse == null || sessionResponse.members() == null) {
+                throw new SessionUpdateException("Failed to get session for nonces, joining will not work: no members returned");
+            }
+
+            Set<String> activeXuids = new HashSet<>();
+            for (SessionMember member : sessionResponse.members().values()) {
+                if (member != null && member.constants() != null && member.constants().get("system") != null
+                    && member.constants().get("system").xuid() != null) {
+                    activeXuids.add(member.constants().get("system").xuid());
+                }
+            }
+
+            activeXuids.remove(sessionInfo.getXuid());
+
+            boolean hasChanges = nonces.keySet().retainAll(activeXuids);
+
+            for (String xuid : activeXuids) {
+                if (!nonces.containsKey(xuid)) {
+                    byte[] bytes = new byte[8];
+                    NONCE_RANDOM.nextBytes(bytes);
+                    StringBuilder hex = new StringBuilder(16);
+                    for (byte b : bytes) {
+                        hex.append(String.format("%02x", b));
+                    }
+
+                    nonces.put(xuid, hex.toString());
+                    logger.debug("Generated nonce for XUID " + xuid + ": " + hex);
+
+                    // This records Xbox-session joins for expiry without assuming
+                    // that every session member is an actual friend.
+                    recordJoin(xuid);
+
+                    hasChanges = true;
+                }
+            }
+
+            if (hasChanges) {
+                updateSession();
+            }
+        } catch (IOException | InterruptedException e) {
+            throw new SessionUpdateException("Failed to get session for nonces, joining will not work: " + e.getMessage());
+        }
     }
 
     /**

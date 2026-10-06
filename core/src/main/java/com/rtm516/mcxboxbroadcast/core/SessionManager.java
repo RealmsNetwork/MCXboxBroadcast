@@ -154,6 +154,12 @@ public class SessionManager extends SessionManagerCore {
         this.sessionInfo.updateSessionInfo(sessionInfo);
         updateSession();
 
+        // A full primary session may have triggered the restart callback above.
+        // Do not touch the old sub-session managers after that handoff.
+        if (!initialized) {
+            return;
+        }
+
         // Each sub-session owns its own Xbox session but shares the same
         // NetherNet transport. Keep its advertised server state in sync.
         for (SubSessionManager subSessionManager : subSessionManagers.values()) {

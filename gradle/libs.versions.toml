@@ -4,7 +4,7 @@ protocol-common = "3.0.0.Beta13-20260828.182244-20"
 protocol-codec = "3.0.0.Beta13-20260828.182244-20"
 libdatachannel = "0.24.5.0-20260921.140330-12"
 network = "2.0.0.CR4-20260925.222343-7"
-geyser ="2.9.3-SNAPSHOT"
+geyser ="072bc064"
 java-websocket = "1.5.3"
 log4j = "2.20.0"
 jline = "3.23.0"
@@ -26,8 +26,8 @@ protocol-common = { group = "org.cloudburstmc.protocol", name = "common", versio
 protocol-codec = { group = "org.cloudburstmc.protocol", name = "bedrock-codec", version.ref = "protocol-codec" }
 protocol-connection = { group = "org.cloudburstmc.protocol", name = "bedrock-connection", version.ref = "protocol-connection" }
 
-geyser-api = { group = "org.geysermc.geyser", name = "api", version.ref = "geyser" }
-geyser-core = { group = "org.geysermc.geyser", name = "core", version.ref = "geyser" }
+geyser-api = { group = "com.github.SendableMetatype.EduGeyser", name = "api", version.ref = "geyser" }
+geyser-core = { group = "com.github.SendableMetatype.EduGeyser", name = "core", version.ref = "geyser" }
 
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson"}
 

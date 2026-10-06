@@ -11,8 +11,9 @@ import com.rtm516.mcxboxbroadcast.core.notifications.NotificationManager;
 import com.rtm516.mcxboxbroadcast.core.notifications.SlackNotificationManager;
 import com.rtm516.mcxboxbroadcast.core.exceptions.SessionCreationException;
 import com.rtm516.mcxboxbroadcast.core.exceptions.SessionUpdateException;
+import com.rtm516.mcxboxbroadcast.core.ping.PingUtil;
 import com.rtm516.mcxboxbroadcast.core.storage.FileStorageManager;
-import org.cloudburstmc.netty.util.nethernet.NetherNetLogging;
+import org.cloudburstmc.protocol.bedrock.BedrockPong;
 import org.geysermc.event.subscribe.Subscribe;
 import org.geysermc.geyser.GeyserImpl;
 import org.geysermc.geyser.api.command.Command;
@@ -25,11 +26,7 @@ import org.geysermc.geyser.api.extension.Extension;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
 
 public class MCXboxBroadcastExtension implements Extension {
@@ -122,7 +119,6 @@ public class MCXboxBroadcastExtension implements Extension {
 
         // Create a new session manager, but reuse the notification manager as config hasn't been reloaded
         sessionManager = new SessionManager(new FileStorageManager(this.dataFolder().toString(), this.dataFolder().resolve("screenshot.jpg").toString()), notificationManager, logger);
-        sessionManager.setNetherNetPortRange(config.session().icePortRange().min(), config.session().icePortRange().max());
 
         // Pull onto another thread so we don't hang the main thread
         sessionManager.scheduledThread().execute(this::createSession);
@@ -147,67 +143,75 @@ public class MCXboxBroadcastExtension implements Extension {
         }
 
         try {
-            config = ConfigLoader.loadConfig(configFile, "Extension");
+            config = ConfigLoader.loadConfig(configFile);
         } catch (IOException e) {
             logger.error("Failed to load config, extension will not start!", e);
             this.disable();
             return;
         }
-        
-        NetherNetLogging.setNativeLogLevel(this.logger().isDebug() ? "DEBUG" : "WARN");
+
+        // Start Nethernet via Geyser's API
+        var nethernet = this.geyserApi().nethernetManager();
+        if (nethernet == null) {
+            logger.error("Nethernet transport is not available. Extension will not start.");
+            this.disable();
+            return;
+        }
+        if (!nethernet.start()) {
+            logger.error("Failed to start Nethernet server. Extension will not start.");
+            this.disable();
+            return;
+        }
+        logger.info("Nethernet connection ID: " + nethernet.getConnectionId());
 
         // TODO Support multiple notification types
         notificationManager = new SlackNotificationManager(logger, config.notifications());
 
+        // Start NetherNet through EduGeyser/Geyser's shared transport.
+        nethernetManager = this.geyserApi().nethernetManager();
+        if (nethernetManager == null) {
+            logger.error("Nethernet transport is not available. Extension will not start.");
+            this.disable();
+            return;
+        }
+        if (!nethernetManager.start()) {
+            logger.error("Failed to start Nethernet server. Extension will not start.");
+            this.disable();
+            return;
+        }
+        logger.info("Nethernet connection ID: " + nethernetManager.getConnectionId());
+
         // Create the session manager
         sessionManager = new SessionManager(new FileStorageManager(this.dataFolder().toString(), this.dataFolder().resolve("screenshot.jpg").toString()), notificationManager, logger);
-        sessionManager.setNetherNetPortRange(config.session().icePortRange().min(), config.session().icePortRange().max());
 
         // Pull onto another thread so we don't hang the main thread
         sessionManager.scheduledThread().execute(() -> {
-            // Get the ip to broadcast
-            String ip = config.session().remoteAddress();
-            if (ip.equals("auto")) {
-                ip = this.geyserApi().bedrockListener().address();
+            // Sign in before the ping. At extension start Geyser is still inside its own startup
+            // and answers pings with the config values. The sign-in takes several round trips,
+            // so after it Geyser has finished starting and the ping returns the values clients
+            // see (MOTD and player count passthrough applied). Clients cache the session card
+            // until they restart, so the first values must already be correct. Only fall back
+            // to the config when the ping fails.
+            sessionManager.getTokenHeader();
 
-                try {
-                    InetAddress address = InetAddress.getByName(ip);
-
-                    // Get the public IP if the config ip is a non-public address
-                    if (address.isSiteLocalAddress() || address.isAnyLocalAddress() || address.isLoopbackAddress()) {
-                        HttpRequest ipRequest = HttpRequest.newBuilder()
-                            .uri(URI.create("https://ipv4.icanhazip.com"))
-                            .GET()
-                            .build();
-
-                        ip = HttpClient.newHttpClient().send(ipRequest, HttpResponse.BodyHandlers.ofString()).body().trim();
-                    }
-                } catch (IOException | InterruptedException e) {
-                    // Silently ignore
-                }
+            SessionInfo info = new SessionInfo();
+            BedrockPong pong = pingGeyser();
+            if (pong != null) {
+                applyPong(info, pong);
+            } else {
+                logger.warn("Geyser did not answer a ping, the session starts with the config values");
+                info.setHostName(this.geyserApi().bedrockListener().secondaryMotd());
+                info.setWorldName(this.geyserApi().bedrockListener().primaryMotd());
+                info.setPlayers(this.geyserApi().onlineConnections().size());
+                info.setMaxPlayers(GeyserImpl.getInstance().config().motd().maxPlayers()); // TODO Find API equivalent
             }
-
-            // Get the port to broadcast
-            int port = this.geyserApi().bedrockListener().port();
-            if (!config.session().remotePort().equals("auto")) {
-                port = Integer.parseInt(config.session().remotePort());
-            }
-
-            // Create the session information based on the Geyser config
-            sessionInfo = new SessionInfo();
-            sessionInfo.setHostName(this.geyserApi().bedrockListener().secondaryMotd());
-            sessionInfo.setWorldName(this.geyserApi().bedrockListener().primaryMotd());
-            sessionInfo.setPlayers(this.geyserApi().onlineConnections().size());
-            sessionInfo.setMaxPlayers(GeyserImpl.getInstance().config().motd().maxPlayers()); // TODO Find API equivalent
 
             // Fallback to the gamertag if the host name is empty
-            if (sessionInfo.getHostName().isEmpty()) {
-                sessionInfo.setHostName(sessionManager.getGamertag());
+            if (info.getHostName().isEmpty()) {
+                info.setHostName(sessionManager.getGamertag());
             }
 
-            sessionInfo.setIp(ip);
-            sessionInfo.setPort(port);
-
+            sessionInfo = info;
             createSession();
         });
     }
@@ -244,17 +248,25 @@ public class MCXboxBroadcastExtension implements Extension {
 
 
     private void createSession() {
+        // Use Geyser's shared Nethernet info
+        var nethernet = this.geyserApi().nethernetManager();
+        String connectionId = nethernet != null ? nethernet.getConnectionId() : null;
+        String pmsgId = nethernet != null ? nethernet.getPmsgId() : null;
+
         // Create the Xbox session
         sessionManager.restartCallback(this::restart);
         try {
-            boolean initialized = sessionManager.init(sessionInfo, config.friendSync());
+            boolean initialized = sessionManager.init(sessionInfo, config.friendSync(), connectionId, pmsgId);
             if (!initialized) {
-                // We assume an error has already been logged
                 this.setEnabled(false);
                 return;
             }
         } catch (SessionCreationException | SessionUpdateException e) {
-            sessionManager.logger().error("Failed to create xbox session!", e);
+            // A stalled RTA handshake here used to leave the extension without a
+            // session until the next restart. Keep trying like checkConnection does.
+            int retrySeconds = config.session().updateInterval();
+            sessionManager.logger().error("Failed to create xbox session, retrying in " + retrySeconds + " seconds", e);
+            sessionManager.scheduledThread().schedule(this::createSession, retrySeconds, TimeUnit.SECONDS);
             return;
         }
 
@@ -263,10 +275,75 @@ public class MCXboxBroadcastExtension implements Extension {
     }
 
     private void tick() {
+        if (nethernetManager == null) {
+            logger.error("Nethernet manager is unavailable");
+            return;
+        }
+
+        if (!nethernetManager.isRunning()) {
+            if (!nethernetManager.start()) {
+                logger.error("Failed to restart Nethernet transport");
+                return;
+            }
+        }
+
+        if (!nethernetManager.isSignalingAlive() && !nethernetManager.restartSignaling()) {
+            logger.error("Failed to restart Nethernet signaling");
+            return;
+        }
+
+        String pmsgId = nethernetManager.getPmsgId();
+        if (pmsgId != null && !pmsgId.isBlank() && sessionInfo != null) {
+            sessionInfo.setPmsgId(pmsgId);
+        }
+
+        // Refresh from Geyser before each update so the session follows the server even when no
+        // client pings it. A failed ping keeps the last known values.
+        BedrockPong pong = pingGeyser();
+        if (pong != null) {
+            applyPong(sessionInfo, pong);
+        }
+
         try {
             sessionManager.updateSession(sessionInfo);
         } catch (SessionUpdateException e) {
             sessionManager.logger().error("Failed to update session information!", e);
         }
+    }
+
+    /**
+     * Ping the local Geyser listener.
+     *
+     * @return The pong, or null when Geyser does not answer in time
+     */
+    private BedrockPong pingGeyser() {
+        String address = this.geyserApi().bedrockListener().address();
+        if (address == null || address.isBlank() || address.equals("0.0.0.0")) {
+            address = "127.0.0.1";
+        } else if (address.equals("::")) {
+            address = "::1";
+        }
+
+        try {
+            return PingUtil.ping(new InetSocketAddress(address, this.geyserApi().bedrockListener().port()), 1500, TimeUnit.MILLISECONDS).get();
+        } catch (Exception e) {
+            logger.debug("Failed to ping Geyser: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Copy the values clients see from the pong into the session information.
+     */
+    private void applyPong(SessionInfo info, BedrockPong pong) {
+        String hostName = pong.subMotd();
+        if (hostName == null || hostName.isEmpty()) {
+            hostName = sessionManager.getGamertag();
+        }
+
+        info.setHostName(hostName);
+        info.setWorldName(pong.motd());
+        info.setPlayers(pong.playerCount());
+        info.setMaxPlayers(pong.maximumPlayerCount());
     }
 }

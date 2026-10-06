@@ -9,6 +9,11 @@ plugins {
 dependencies {
     api(project(":core"))
 
+    // Standalone owns the local NetherNet transport, so these native/runtime
+    // dependencies belong only in the standalone distribution.
+    implementation(libs.nethernet.transport)
+    implementation(libs.libdatachannel)
+
     api(libs.terminalconsoleappender) {
         exclude("org.apache.logging.log4j")
         exclude("org.jline")

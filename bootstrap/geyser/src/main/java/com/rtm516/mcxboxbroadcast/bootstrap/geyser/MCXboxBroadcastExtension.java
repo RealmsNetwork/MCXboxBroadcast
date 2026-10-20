@@ -127,7 +127,7 @@ public class MCXboxBroadcastExtension implements Extension {
     public void onPostInitialize(GeyserPostInitializeEvent event) {
         logger = new ExtensionLoggerImpl(this.logger());
 
-        logger.info("Starting MCXboxBroadcast Extension " + BuildData.VERSION + " for Bedrock " + Constants.BEDROCK_CODEC.getMinecraftVersion() + " (" + Constants.BEDROCK_CODEC.getProtocolVersion() + ")");
+        logger.info("Starting MCXboxBroadcast Extension " + BuildData.VERSION + " for Bedrock " + Constants.BEDROCK_VERSION + " (" + Constants.BEDROCK_PROTOCOL_VERSION + ")");
 
         // Load the config file
         File configFile = dataFolder().resolve("config.yml").toFile();

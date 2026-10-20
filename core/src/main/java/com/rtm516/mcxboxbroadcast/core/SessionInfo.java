@@ -42,11 +42,11 @@ public class SessionInfo {
     }
 
     public String getVersion() {
-        return Constants.BEDROCK_CODEC.getMinecraftVersion();
+        return Constants.BEDROCK_VERSION;
     }
 
     public int getProtocol() {
-        return Constants.BEDROCK_CODEC.getProtocolVersion();
+        return Constants.BEDROCK_PROTOCOL_VERSION;
     }
 
     public int getPlayers() {

@@ -1,22 +1,19 @@
 [versions]
-protocol-connection = "3.0.0.Beta13-20260917.001841-27"
-protocol-common = "3.0.0.Beta13-20260917.001841-27"
-protocol-codec = "3.0.0.Beta13-20260917.001841-27"
+protocol-connection = "3.0.0.Beta14-20261019.150006-9"
+protocol-common = "3.0.0.Beta14-20261019.150006-9"
+protocol-codec = "3.0.0.Beta14-20261019.150006-9"
 geyser = "072bc064"
-java-websocket = "1.5.3"
-log4j = "2.20.0"
-jline = "3.23.0"
-terminalconsoleappender = "1.3.0"
-methanol = "1.7.0"
+java-websocket = "1.6.0"
+methanol = "1.9.0"
 minecraftauth = "5.0.2"
-gson = "2.11.0"
-sqlite = "3.50.2.0"
+gson = "2.14.0"
+sqlite = "3.53.4.0"
 configurate = "4.2.0-GeyserMC-20251111.004649-11"
 configurate-core = "4.2.0-GeyserMC-20251111.004649-12"
 
-shadow = "9.3.0"
-indra = "3.1.3"
-blossom = "2.1.0"
+shadow = "9.6.1"
+indra = "4.1.0"
+blossom = "2.2.0"
 
 [libraries]
 protocol-common = { group = "org.cloudburstmc.protocol", name = "common", version.ref = "protocol-common" }
@@ -40,16 +37,6 @@ shadow = { group = "com.gradleup.shadow", name = "shadow-gradle-plugin", version
 indra-git = { group = "net.kyori", name = "indra-git", version.ref = "indra" }
 blossom = { group = "net.kyori", name = "blossom", version.ref = "blossom" }
 
-terminalconsoleappender = { group = "net.minecrell", name = "terminalconsoleappender", version.ref = "terminalconsoleappender" }
-
-log4j-api = { group = "org.apache.logging.log4j", name = "log4j-api", version.ref = "log4j" }
-log4j-core = { group = "org.apache.logging.log4j", name = "log4j-core", version.ref = "log4j" }
-log4j-slf4j2-impl = { group = "org.apache.logging.log4j", name = "log4j-slf4j2-impl", version.ref = "log4j" }
-
-jline-terminal = { group = "org.jline", name = "jline-terminal", version.ref = "jline" }
-jline-terminal-jna = { group = "org.jline", name = "jline-terminal-jna", version.ref = "jline" }
-jline-reader = { group = "org.jline", name = "jline-reader", version.ref = "jline" }
-
 methanol = { group = "com.github.mizosoft.methanol", name = "methanol", version.ref = "methanol" }
 
 minecraftauth = { group = "net.raphimc", name = "MinecraftAuth", version.ref = "minecraftauth" }
@@ -60,16 +47,6 @@ sqlite = { group = "org.xerial", name = "sqlite-jdbc", version.ref = "sqlite" }
 geyser = [
     "geyser-api",
     "geyser-core"
-]
-log4j = [
-    "log4j-api",
-    "log4j-core",
-    "log4j-slf4j2-impl"
-]
-jline = [
-    "jline-terminal",
-    "jline-terminal-jna",
-    "jline-reader"
 ]
 protocol = [
     "protocol-common",

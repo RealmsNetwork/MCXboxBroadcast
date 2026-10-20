@@ -2,9 +2,6 @@ package com.rtm516.mcxboxbroadcast.core;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import org.cloudburstmc.protocol.bedrock.codec.BedrockCodec;
-import org.cloudburstmc.protocol.bedrock.codec.v2193.Bedrock_v2193;
-
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
@@ -44,7 +41,9 @@ public class Constants {
 
     public static final int MAX_FRIENDS = 1000;
 
-    public static final BedrockCodec BEDROCK_CODEC = Bedrock_v2193.CODEC;
+    public static final int BEDROCK_PROTOCOL_VERSION = 2193;
+    // The newest release on BEDROCK_PROTOCOL_VERSION. Joining currently only compares the protocol
+    public static final String BEDROCK_VERSION = "1.26.52";
 
     /**
      * Config version for upgrade purposes

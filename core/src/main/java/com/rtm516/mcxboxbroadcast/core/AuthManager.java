@@ -64,7 +64,7 @@ public class AuthManager {
                     }
 
                     if (json != null) {
-                        authManager = BedrockAuthManager.fromJson(httpClient, Constants.BEDROCK_CODEC.getMinecraftVersion(), json);
+                        authManager = BedrockAuthManager.fromJson(httpClient, Constants.BEDROCK_VERSION, json);
                     }
                 }
             } catch (Exception e) {
@@ -81,7 +81,7 @@ public class AuthManager {
                     notificationManager.sendSessionExpiredNotification(msaDeviceCode.getVerificationUri(), msaDeviceCode.getUserCode());
                 };
 
-                authManager = BedrockAuthManager.create(httpClient, Constants.BEDROCK_CODEC.getMinecraftVersion())
+                authManager = BedrockAuthManager.create(httpClient, Constants.BEDROCK_VERSION)
                         .login(DeviceCodeMsaAuthService::new, deviceCodeCallback);
             }
 

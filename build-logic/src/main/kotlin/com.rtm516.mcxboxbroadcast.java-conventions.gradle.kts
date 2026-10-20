@@ -13,14 +13,17 @@ repositories {
     maven("https://repo.maven.apache.org/maven2/")
     maven("https://repo.opencollab.dev/maven-releases/")
     maven("https://repo.opencollab.dev/maven-snapshots/")
-    maven("https://s01.oss.sonatype.org/content/repositories/snapshots/")
     maven("https://jitpack.io")
     maven("https://maven.lenni0451.net/snapshots")
 }
 
 group = properties["group"] as String
 version = properties["version"] as String
-java.sourceCompatibility = JavaVersion.VERSION_21
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(27)
+    }
+}
 
 publishing {
     publications.create<MavenPublication>("maven") {
@@ -30,6 +33,7 @@ publishing {
 
 tasks.withType<JavaCompile>() {
     options.encoding = "UTF-8"
+    options.release = 25
 }
 
 tasks.withType<Javadoc>() {

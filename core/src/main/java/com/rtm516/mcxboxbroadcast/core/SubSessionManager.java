@@ -91,6 +91,9 @@ public class SubSessionManager extends SessionManagerCore {
         String responseBody = super.updateSessionInternal(Constants.CREATE_SESSION.formatted(getSessionId()), new CreateSessionRequest(this.sessionInfo, nonces));
         try {
             CreateSessionResponse sessionResponse = Constants.GSON.fromJson(responseBody, CreateSessionResponse.class);
+            if (sessionResponse == null || sessionResponse.members() == null) {
+                throw new SessionUpdateException("Xbox sub-session update returned no member list");
+            }
 
             // Recreate if we have 28/30 session members
             int players = sessionResponse.members().size();

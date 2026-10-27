@@ -200,6 +200,9 @@ public class SessionManager extends SessionManagerCore {
         String responseBody = super.updateSessionInternal(Constants.CREATE_SESSION.formatted(this.sessionInfo.getSessionId()), new CreateSessionRequest(this.sessionInfo, nonces));
         try {
             CreateSessionResponse sessionResponse = Constants.GSON.fromJson(responseBody, CreateSessionResponse.class);
+            if (sessionResponse == null || sessionResponse.members() == null) {
+                throw new SessionUpdateException("Xbox session update returned no member list");
+            }
 
             // Restart if we have 28/30 session members
             int players = sessionResponse.members().size();

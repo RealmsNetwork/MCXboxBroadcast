@@ -290,7 +290,11 @@ public class MCXboxBroadcastExtension implements Extension {
         }
 
         String pmsgId = nethernetManager.getPmsgId();
-        if (pmsgId != null && !pmsgId.isBlank() && sessionManager != null) {
+        if (pmsgId == null || pmsgId.isBlank()) {
+            logger.debug("NetherNet signaling has no PlayFab messaging ID yet; skipping this session update");
+            return;
+        }
+        if (sessionManager != null) {
             sessionManager.updatePmsgId(pmsgId);
         }
 

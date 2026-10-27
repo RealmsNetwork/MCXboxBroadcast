@@ -171,6 +171,27 @@ public class SessionManager extends SessionManagerCore {
         }
     }
 
+    /**
+     * Update the shared PlayFab messaging ID after the NetherNet signaling layer reconnects.
+     * Keep the primary and all sub-sessions advertising the same live transport identity.
+     *
+     * @param pmsgId The current PlayFab messaging ID
+     */
+    public void updatePmsgId(String pmsgId) {
+        if (pmsgId == null || pmsgId.isBlank() || this.sessionInfo == null) {
+            return;
+        }
+
+        this.sessionInfo.setPmsgId(pmsgId);
+        for (SubSessionManager subSessionManager : subSessionManagers.values()) {
+            try {
+                subSessionManager.syncFromParent();
+            } catch (SessionUpdateException e) {
+                logger.error("Failed to update sub-session after NetherNet signaling restart", e);
+            }
+        }
+    }
+
     @Override
     protected void updateSession() throws SessionUpdateException {
         // Make sure the websocket connection is still active

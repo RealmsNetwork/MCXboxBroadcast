@@ -364,6 +364,10 @@ public abstract class SessionManagerCore {
 
         try {
             HttpResponse<String> getSessionResponse = httpClient.send(getSessionRequest, HttpResponse.BodyHandlers.ofString());
+            if (getSessionResponse.statusCode() != 200) {
+                throw new SessionUpdateException("Failed to get session for nonces: HTTP "
+                    + getSessionResponse.statusCode() + " " + getSessionResponse.body());
+            }
             CreateSessionResponse sessionResponse = Constants.GSON.fromJson(getSessionResponse.body(), CreateSessionResponse.class);
 
             if (sessionResponse == null || sessionResponse.members() == null) {

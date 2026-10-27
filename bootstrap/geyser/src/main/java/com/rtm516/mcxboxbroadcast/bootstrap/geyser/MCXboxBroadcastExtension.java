@@ -161,7 +161,7 @@ public class MCXboxBroadcastExtension implements Extension {
             this.disable();
             return;
         }
-        if (!nethernetManager.start()) {
+        if (!nethernetManager.isRunning() && !nethernetManager.start()) {
             logger.error("Failed to start Nethernet server. Extension will not start.");
             this.disable();
             return;
@@ -290,8 +290,8 @@ public class MCXboxBroadcastExtension implements Extension {
         }
 
         String pmsgId = nethernetManager.getPmsgId();
-        if (pmsgId != null && !pmsgId.isBlank() && sessionInfo != null) {
-            sessionInfo.setPmsgId(pmsgId);
+        if (pmsgId != null && !pmsgId.isBlank() && sessionManager != null) {
+            sessionManager.updatePmsgId(pmsgId);
         }
 
         // Refresh from Geyser before each update so the session follows the server even when no

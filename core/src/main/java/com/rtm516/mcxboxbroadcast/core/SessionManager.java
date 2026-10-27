@@ -182,6 +182,10 @@ public class SessionManager extends SessionManagerCore {
             return;
         }
 
+        if (pmsgId.equals(this.sessionInfo.getPmsgId())) {
+            return;
+        }
+
         this.sessionInfo.setPmsgId(pmsgId);
         for (SubSessionManager subSessionManager : subSessionManagers.values()) {
             try {

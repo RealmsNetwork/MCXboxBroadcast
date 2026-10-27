@@ -9,8 +9,8 @@ dependencies {
     api(libs.minecraftauth)
     api(libs.bundles.protocol)
 
-    api(libs.nethernet.transport)
-    api(libs.libdatachannel)
+    compileOnly(libs.nethernet.transport)
+    compileOnly(libs.libdatachannel)
 
     api(libs.sqlite)
 

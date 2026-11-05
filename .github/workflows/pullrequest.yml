@@ -33,8 +33,34 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
         with:
           gradle-home-cache-cleanup: true
-      - name: Make EduGeyser dependency compatible with JDK 27
+      - name: Prepare EduGeyser composite build for JDK 27
         run: |
+          cat > EduGeyser/settings.gradle.kts <<'EOF'
+          @file:Suppress("UnstableApiUsage")
+
+          enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
+
+          pluginManagement {
+              repositories {
+                  gradlePluginPortal()
+                  maven("https://repo.opencollab.dev/maven-snapshots/")
+                  maven("https://maven.fabricmc.net/")
+                  maven("https://maven.architectury.dev/")
+                  maven("https://maven.neoforged.net/releases")
+              }
+              includeBuild("build-logic")
+          }
+
+          rootProject.name = "geyser-parent"
+          include(":ap")
+          include(":api")
+          include(":common")
+          include(":core")
+
+          plugins {
+              id("org.gradle.toolchains.foojay-resolver-convention") version ("1.0.0")
+          }
+          EOF
           cat >> EduGeyser/build.gradle.kts <<'EOF'
           allprojects {
               configurations.configureEach {

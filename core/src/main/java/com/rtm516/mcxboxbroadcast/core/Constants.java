@@ -41,9 +41,9 @@ public class Constants {
 
     public static final int MAX_FRIENDS = 1000;
 
-    public static final int BEDROCK_PROTOCOL_VERSION = 2193;
+    public static final int BEDROCK_PROTOCOL_VERSION = 2225;
     // The newest release on BEDROCK_PROTOCOL_VERSION. Joining currently only compares the protocol
-    public static final String BEDROCK_VERSION = "1.26.52";
+    public static final String BEDROCK_VERSION = "1.26.60";
 
     /**
      * Config version for upgrade purposes

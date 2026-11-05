@@ -9,7 +9,9 @@ pluginManagement {
     includeBuild("build-logic")
 }
 
-val geyserForkDir = file("../EduGeyser")
+// Prefer the CI workspace checkout, while retaining the sibling checkout path
+// used by local development environments.
+val geyserForkDir = file("EduGeyser").takeIf { it.isDirectory } ?: file("../EduGeyser")
 if (geyserForkDir.isDirectory) {
     includeBuild(geyserForkDir) {
         dependencySubstitution {

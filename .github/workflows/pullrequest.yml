@@ -16,9 +16,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+      - name: Checkout EduGeyser fork
+        uses: actions/checkout@v6
+        with:
+          repository: SendableMetatype/EduGeyser
+          ref: 072bc0644f2ab2ac0c18e55684b6ab22a7f0c84e
+          path: EduGeyser
       - name: Validate Gradle Wrapper
         uses: gradle/actions/wrapper-validation@v5
-      - name: Set up JDK 17
+      - name: Set up JDK 27
         uses: actions/setup-java@v5
         with:
           java-version: 27
@@ -27,6 +33,41 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
         with:
           gradle-home-cache-cleanup: true
+      - name: Prepare EduGeyser composite build for JDK 27
+        run: |
+          cat > EduGeyser/settings.gradle.kts <<'EOF'
+          @file:Suppress("UnstableApiUsage")
+
+          enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
+
+          pluginManagement {
+              repositories {
+                  gradlePluginPortal()
+                  maven("https://repo.opencollab.dev/maven-snapshots/")
+                  maven("https://maven.fabricmc.net/")
+                  maven("https://maven.architectury.dev/")
+                  maven("https://maven.neoforged.net/releases")
+              }
+              includeBuild("build-logic")
+          }
+
+          rootProject.name = "geyser-parent"
+          include(":ap")
+          include(":api")
+          include(":common")
+          include(":core")
+
+          plugins {
+              id("org.gradle.toolchains.foojay-resolver-convention") version ("1.0.0")
+          }
+          EOF
+          cat >> EduGeyser/build.gradle.kts <<'EOF'
+          allprojects {
+              configurations.configureEach {
+                  resolutionStrategy.force("org.projectlombok:lombok:1.18.48")
+              }
+          }
+          EOF
       - name: Build
         run: ./gradlew build
       - uses: actions/upload-artifact@v7
@@ -34,10 +75,4 @@ jobs:
         with:
           name: MCXboxBroadcastExtension
           path: bootstrap/geyser/build/libs/MCXboxBroadcastExtension.jar
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v7
-        if: success()
-        with:
-          name: MCXboxBroadcastStandalone
-          path: bootstrap/standalone/build/libs/MCXboxBroadcastStandalone.jar
           if-no-files-found: error

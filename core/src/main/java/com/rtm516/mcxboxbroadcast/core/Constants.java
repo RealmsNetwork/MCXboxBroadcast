@@ -34,6 +34,9 @@ public class Constants {
 
     public static final Duration WEBSOCKET_CONNECTION_TIMEOUT = Duration.ofSeconds(10);
 
+    public static final int ROTATE_MEMBER_COUNT = 28;
+    public static final Duration ROTATE_GRACE_PERIOD = Duration.ofSeconds(30);
+
     /**
      * https://github.com/LiteLDev/LeviLamina/blob/main/src/mc/network/ConnectionType.h
      */
@@ -41,9 +44,9 @@ public class Constants {
 
     public static final int MAX_FRIENDS = 1000;
 
-    public static final int BEDROCK_PROTOCOL_VERSION = 2193;
+    public static final int BEDROCK_PROTOCOL_VERSION = 2225;
     // The newest release on BEDROCK_PROTOCOL_VERSION. Joining currently only compares the protocol
-    public static final String BEDROCK_VERSION = "1.26.52";
+    public static final String BEDROCK_VERSION = "1.26.60";
 
     /**
      * Config version for upgrade purposes

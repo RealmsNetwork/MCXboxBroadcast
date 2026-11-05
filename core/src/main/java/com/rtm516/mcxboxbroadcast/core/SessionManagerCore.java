@@ -212,40 +212,23 @@ public abstract class SessionManagerCore {
      * @throws SessionUpdateException If the updating of the session information fails
      */
     protected void createSession() throws SessionCreationException, SessionUpdateException {
-        // Get the token for authentication
-        BedrockAuthManager manager = getAuthManager();
-        String token;
-        try {
-            token = manager.getXboxLiveXstsToken().getUpToDate().getAuthorizationHeader();
-        } catch (Exception e) {
-             throw new SessionCreationException("Failed to get authorization headers: " + e.getMessage());
-        }
-
-        // We only need a websocket for the primary session manager
+        // Only the primary session needs to establish the RTA websocket.
         if (this.sessionInfo != null) {
-            // Update the current session XUID
             this.sessionInfo.setXuid(getXuid());
-
-            // Create the RTA websocket connection
             setupRtaWebsocket();
 
             try {
-                // Wait and get the connection ID from the websocket
                 String connectionId = waitForConnectionId();
-
-                // Update the current session connection ID
                 this.sessionInfo.setConnectionId(connectionId);
             } catch (InterruptedException | ExecutionException | TimeoutException e) {
-                // The connect is asynchronous, so the socket can still open after this
-                // timeout. Close it, otherwise the next connection check sees an open
-                // socket without a registered connection as healthy and never retries.
+                // A timed-out asynchronous connection may still open later. Close it so
+                // checkConnection() cannot mistake an unregistered socket for a healthy one.
                 rtaWebsocket.close();
-                throw new SessionCreationException("Unable to get connectionId for session: " + e.getClass().getSimpleName() + (e.getMessage() == null ? "" : " " + e.getMessage()));
+                throw new SessionCreationException("Unable to get connectionId for session: "
+                    + e.getClass().getSimpleName() + (e.getMessage() == null ? "" : " " + e.getMessage()));
             }
-
         }
 
-        // Set the showcase image to the current screenshot
         File imageFile = storageManager.screenshot();
         if (imageFile.exists()) {
             logger.info("Setting showcase image");
@@ -254,10 +237,23 @@ public abstract class SessionManagerCore {
             }
         }
 
-        // Push the session information to the session directory
+        publishSession();
+    }
+
+    /**
+     * Publish the current session and create a fresh activity handle without
+     * reconnecting the RTA websocket or changing the shared NetherNet transport.
+     */
+    protected void publishSession() throws SessionCreationException, SessionUpdateException {
+        String token;
+        try {
+            token = getAuthManager().getXboxLiveXstsToken().getUpToDate().getAuthorizationHeader();
+        } catch (Exception e) {
+            throw new SessionCreationException("Failed to get authorization headers: " + e.getMessage());
+        }
+
         updateSession();
 
-        // Create the session handle request
         CreateHandleRequest createHandleContent = new CreateHandleRequest(
             1,
             "activity",
@@ -268,7 +264,6 @@ public abstract class SessionManagerCore {
             )
         );
 
-        // Make the request to create the session handle
         HttpRequest createHandleRequest;
         try {
             createHandleRequest = HttpRequest.newBuilder()
@@ -282,7 +277,6 @@ public abstract class SessionManagerCore {
             throw new SessionCreationException("Unable to create session handle, error parsing json: " + e.getMessage());
         }
 
-        // Read the handle response
         HttpResponse<String> createHandleResponse;
         try {
             createHandleResponse = httpClient.send(createHandleRequest, HttpResponse.BodyHandlers.ofString());
@@ -295,11 +289,10 @@ public abstract class SessionManagerCore {
         }
 
         lastSessionResponse = createHandleResponse.body();
-
-        // Check to make sure the handle was created
         if (createHandleResponse.statusCode() != 200 && createHandleResponse.statusCode() != 201) {
-            logger.debug("Failed to create session handle '"  + lastSessionResponse + "' (" + createHandleResponse.statusCode() + ")");
-            throw new SessionCreationException("Unable to create session handle, got status " + createHandleResponse.statusCode() + " trying to create: " + createHandleResponse.body());
+            logger.debug("Failed to create session handle '" + lastSessionResponse + "' (" + createHandleResponse.statusCode() + ")");
+            throw new SessionCreationException("Unable to create session handle, got status "
+                + createHandleResponse.statusCode() + " trying to create: " + createHandleResponse.body());
         }
     }
 
@@ -377,10 +370,19 @@ public abstract class SessionManagerCore {
             // Only update the session properties if something changed
             if (hasChanges) {
                 updateSession();
+            } else {
+                onSessionMemberCount(sessionResponse.members().size());
             }
         } catch (IOException | InterruptedException e) {
             throw new SessionUpdateException("Failed to get session for nonces, joining will not work: " + e.getMessage());
         }
+    }
+
+    /**
+     * Called when a session member count is observed without requiring a property update.
+     * Subclasses can use this to schedule a safe session rotation.
+     */
+    protected void onSessionMemberCount(int members) {
     }
 
     /**

@@ -16,6 +16,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+      - name: Checkout EduGeyser fork
+        uses: actions/checkout@v6
+        with:
+          repository: SendableMetatype/EduGeyser
+          ref: 072bc0644f2ab2ac0c18e55684b6ab22a7f0c84e
+          path: EduGeyser
       - name: Validate Gradle Wrapper
         uses: gradle/actions/wrapper-validation@v5
       - name: Set up JDK 17
@@ -27,6 +33,15 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
         with:
           gradle-home-cache-cleanup: true
+      - name: Make EduGeyser dependency compatible with JDK 27
+        run: |
+          cat >> EduGeyser/build.gradle.kts <<'EOF'
+          allprojects {
+              configurations.configureEach {
+                  resolutionStrategy.force("org.projectlombok:lombok:1.18.48")
+              }
+          }
+          EOF
       - name: Build
         run: ./gradlew build
       - uses: actions/upload-artifact@v7

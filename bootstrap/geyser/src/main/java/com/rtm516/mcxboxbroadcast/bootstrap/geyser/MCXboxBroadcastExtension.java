@@ -236,12 +236,12 @@ public class MCXboxBroadcastExtension implements Extension {
         // Use Geyser's shared Nethernet info
         var nethernet = this.geyserApi().nethernetManager();
         String connectionId = nethernet != null ? nethernet.getConnectionId() : null;
-        String pmsgId = nethernet != null ? nethernet.getPmsgId() : null;
 
-        // Create the Xbox session
+        // Create the Xbox session. The PmsgId comes from the authenticated Minecraft
+        // session token, not from Geyser's NethernetManager API.
         sessionManager.restartCallback(this::restart);
         try {
-            boolean initialized = sessionManager.init(sessionInfo, config.friendSync(), connectionId, pmsgId);
+            boolean initialized = sessionManager.init(sessionInfo, config.friendSync(), connectionId, null);
             if (!initialized) {
                 this.setEnabled(false);
                 return;

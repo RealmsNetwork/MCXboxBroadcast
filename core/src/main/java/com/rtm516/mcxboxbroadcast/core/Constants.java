@@ -34,6 +34,9 @@ public class Constants {
 
     public static final Duration WEBSOCKET_CONNECTION_TIMEOUT = Duration.ofSeconds(10);
 
+    public static final int ROTATE_MEMBER_COUNT = 28;
+    public static final Duration ROTATE_GRACE_PERIOD = Duration.ofSeconds(30);
+
     /**
      * https://github.com/LiteLDev/LeviLamina/blob/main/src/mc/network/ConnectionType.h
      */

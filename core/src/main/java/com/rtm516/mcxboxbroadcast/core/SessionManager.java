@@ -6,6 +6,7 @@ import com.rtm516.mcxboxbroadcast.core.exceptions.SessionCreationException;
 import com.rtm516.mcxboxbroadcast.core.exceptions.SessionUpdateException;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateSessionRequest;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateSessionResponse;
+import com.rtm516.mcxboxbroadcast.core.models.session.SessionSystemProperties;
 import com.rtm516.mcxboxbroadcast.core.notifications.NotificationManager;
 import com.rtm516.mcxboxbroadcast.core.storage.StorageManager;
 import org.java_websocket.util.NamedThreadFactory;
@@ -16,14 +17,17 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Simple manager to authenticate and create sessions on Xbox
@@ -36,6 +40,7 @@ public class SessionManager extends SessionManagerCore {
     // Cached sub-sessions whose creation is still being retried. They are not in the map
     // yet, so add and remove consult this set and the retry stops once an ID leaves it
     private final Set<String> pendingSubSessions = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean rotating = new AtomicBoolean(false);
 
     private CoreConfig.FriendSyncConfig friendSyncConfig;
     private Runnable restartCallback;
@@ -96,6 +101,15 @@ public class SessionManager extends SessionManagerCore {
         }
         if (pmsgId != null) {
             this.sessionInfo.setPmsgId(pmsgId);
+        } else if (netherNetId != null) {
+            // Geyser exposes its shared NetherNet connection ID, while the PmsgId
+            // belongs to the authenticated Minecraft session token (the `pmid` claim).
+            try {
+                this.sessionInfo.setPmsgId(getAuthManager().getMinecraftSession()
+                    .getUpToDate().getParsedToken().getPayload().reqString("pmid"));
+            } catch (Exception e) {
+                throw new SessionCreationException("Failed to read NetherNet PmsgId from the Minecraft session token: " + e.getMessage());
+            }
         }
 
         super.init();
@@ -198,14 +212,72 @@ public class SessionManager extends SessionManagerCore {
         try {
             CreateSessionResponse sessionResponse = Constants.GSON.fromJson(responseBody, CreateSessionResponse.class);
 
-            // Restart if we have 28/30 session members
-            int players = sessionResponse.members().size();
-            if (players >= 28) {
-                logger.info("Restarting session due to " + players + "/30 players");
-                restart();
-            }
+            checkMemberCount(sessionResponse.members().size());
         } catch (JsonParseException e) {
             throw new SessionUpdateException("Failed to parse session response: " + e.getMessage());
+        }
+    }
+
+    @Override
+    protected void onSessionMemberCount(int members) {
+        checkMemberCount(members);
+    }
+
+    /**
+     * Queue a rotation before Xbox's 30-member session limit is reached.
+     */
+    private void checkMemberCount(int members) {
+        if (members < Constants.ROTATE_MEMBER_COUNT || !rotating.compareAndSet(false, true)) {
+            return;
+        }
+
+        logger.info("Rotating session due to " + members + "/30 members");
+        scheduledThreadPool.execute(this::rotateSession);
+    }
+
+    /**
+     * Publish a fresh session while keeping the existing RTA websocket and the
+     * Geyser-owned NetherNet connection intact. Existing players get a grace period.
+     */
+    private void rotateSession() {
+        String oldSessionId = sessionInfo.getSessionId();
+        try {
+            sessionInfo.setSessionId(UUID.randomUUID().toString());
+            nonces.clear();
+            publishSession();
+
+            logger.info("Rotated session " + oldSessionId + " -> " + sessionInfo.getSessionId());
+
+            // Keep every account's advertised state in step with the primary session.
+            for (Map.Entry<String, SubSessionManager> entry : subSessionManagers.entrySet()) {
+                try {
+                    entry.getValue().syncFromParent();
+                } catch (SessionUpdateException e) {
+                    logger.error("Failed to update sub-session " + entry.getKey() + " after primary rotation", e);
+                }
+            }
+
+            scheduledThreadPool.schedule(() -> closeSession(oldSessionId),
+                Constants.ROTATE_GRACE_PERIOD.toSeconds(), TimeUnit.SECONDS);
+        } catch (SessionCreationException | SessionUpdateException e) {
+            logger.error("Failed to rotate session, restarting instead", e);
+            restart();
+        } finally {
+            rotating.set(false);
+        }
+    }
+
+    /**
+     * Stop new joins to an old session after the grace period while allowing
+     * its already-connected members to finish playing.
+     */
+    private void closeSession(String sessionId) {
+        try {
+            super.updateSessionInternal(Constants.CREATE_SESSION.formatted(sessionId),
+                Map.of("properties", Map.of("system", new SessionSystemProperties("followed", "followed", true))));
+            logger.debug("Closed old session " + sessionId);
+        } catch (SessionUpdateException e) {
+            logger.warn("Failed to close old session " + sessionId + ": " + e.getMessage());
         }
     }
 

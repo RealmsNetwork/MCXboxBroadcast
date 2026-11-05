@@ -24,7 +24,7 @@ jobs:
           path: EduGeyser
       - name: Validate Gradle Wrapper
         uses: gradle/actions/wrapper-validation@v5
-      - name: Set up JDK 17
+      - name: Set up JDK 27
         uses: actions/setup-java@v5
         with:
           java-version: 27
@@ -75,10 +75,4 @@ jobs:
         with:
           name: MCXboxBroadcastExtension
           path: bootstrap/geyser/build/libs/MCXboxBroadcastExtension.jar
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v7
-        if: success()
-        with:
-          name: MCXboxBroadcastStandalone
-          path: bootstrap/standalone/build/libs/MCXboxBroadcastStandalone.jar
           if-no-files-found: error
